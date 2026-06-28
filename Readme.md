@@ -170,7 +170,7 @@ lumiere/
 **1. Clone**
 
 ```bash
-git clone <repo-url>
+git clone [<repo-url>](https://github.com/LearnCreateApply/Chat-Bot)
 cd lumiere
 ```
 
@@ -200,36 +200,6 @@ cd intent-service && pip install -r requirements.txt && cd ..
 ```
 
 The first run downloads `all-MiniLM-L6-v2` (~80 MB) and precomputes embeddings. Subsequent starts use the local cache.
-
----
-
-## Environment Variables
-
-`.env.example` — commit this. Never commit `.env`.
-
-```dotenv
-# Required if using Gemini as the LLM provider
-GEMINI_API_KEY=your_gemini_api_key_here
-
-# Ollama fallback — only set these to override the defaults
-# OLLAMA_MODEL=gemma3:4b
-# OLLAMA_BASE_URL=http://localhost:11434/v1
-
-# Only needed when running outside Docker
-# INTENT_SERVICE_URL=http://localhost:8001/classify
-
-# PORT=3000
-```
-
-| Variable | Default | Required |
-|---|---|---|
-| `GEMINI_API_KEY` | — | Yes (if using Gemini) |
-| `OLLAMA_MODEL` | `gemma3:4b` | No |
-| `OLLAMA_BASE_URL` | `http://localhost:11434/v1` | No |
-| `INTENT_SERVICE_URL` | `http://localhost:8001/classify` | No |
-| `PORT` | `3000` | No |
-
-> Gemini is the intended primary provider. The call in `geminiClient.js` is currently commented out — Ollama is active by default. To switch, uncomment the Gemini block and set `GEMINI_API_KEY`.
 
 ---
 
