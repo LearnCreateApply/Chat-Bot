@@ -129,7 +129,6 @@ async function generateReply(prompt) {
   try {
     console.log(`Calling Ollama (${OLLAMA_MODEL} @ ${OLLAMA_BASE_URL})...`);
     const reply = await callWithRetry(getOllamaClient(), OLLAMA_MODEL, prompt, 'Ollama');
-    console.log(prompt);
     return reply;
   } catch (error) {
     throw new Error(
