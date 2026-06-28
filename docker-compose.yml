@@ -1,0 +1,42 @@
+version: '3.9'
+
+services:
+  intent-service:
+    build: ./intent-service
+    ports:
+      - "8001:8001"
+    networks:
+      - lumiere-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/docs"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s  # model download + embedding precompute on first run
+
+  backend:
+    build: ./backend
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env
+    environment:
+      # Overrides INTENT_SERVICE_URL from .env so the backend reaches
+      # the intent-service container by name, not localhost.
+      - INTENT_SERVICE_URL=http://intent-service:8001/classify
+      - PORT=3000
+    volumes:
+      # Mount the pre-seeded SQLite file read-only.
+      # Run `cd db && node seed.js` locally before `docker compose up`.
+      - ./db/beauty_store.db:/app/db/beauty_store.db:ro
+    depends_on:
+      intent-service:
+        condition: service_healthy
+    networks:
+      - lumiere-net
+    restart: unless-stopped
+
+networks:
+  lumiere-net:
+    driver: bridge

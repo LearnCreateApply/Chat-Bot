@@ -1,0 +1,12 @@
+{
+  "name": "beauty-bot-db",
+  "version": "1.0.0",
+  "description": "Database setup for the beauty ecommerce chatbot",
+  "main": "seed.js",
+  "scripts": {
+    "seed": "node seed.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.0.0"
+  }
+}

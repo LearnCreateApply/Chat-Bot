@@ -1,0 +1,57 @@
+# ── Environment & secrets ──────────────────────────────────────────────────
+.env
+*.env.local
+*.env.*.local
+
+# ── Node ──────────────────────────────────────────────────────────────────
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json   # remove this line if you want to commit lock files
+
+# ── Python ────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+.venv/
+venv/
+env/
+pip-log.txt
+pip-delete-this-directory.txt
+
+# sentence-transformers model cache (downloaded at build/runtime, not source)
+.cache/
+~/.cache/huggingface/
+
+# ── Database ───────────────────────────────────────────────────────────────
+# The seeded db file is generated locally and mounted into Docker at runtime.
+# Do not commit it — it may contain demo PII (user rows from seed.js).
+db/beauty_store.db
+*.db
+*.sqlite
+*.sqlite3
+
+# ── Docker ─────────────────────────────────────────────────────────────────
+# Compose override files for local developer tweaks
+docker-compose.override.yml
+
+# ── OS & editors ───────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.idea/
+.vscode/
+*.code-workspace
+
+# ── Logs ───────────────────────────────────────────────────────────────────
+logs/
+*.log
