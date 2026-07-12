@@ -1,4 +1,5 @@
 const db = require('../db');
+const { detectCategory } = require('./categoryKeywords');
 const { setLastOrderId, getState } = require('../conversationState');
 
 const MAX_RECENT_ORDERS = 5;
@@ -12,11 +13,59 @@ function extractOrderId(message) {
     return null;
 }
 
-function findProductMentioned(message) {
+function findProductMentioned(userId, message) {
     if (!message) return null;
     const msgLower = message.toLowerCase();
-    const allProducts = db.prepare('SELECT product_id, name FROM products').all();
 
+    // FIX: prioritize matching against products the customer has ACTUALLY
+    // ordered before falling back to the full catalog. A catalog-wide
+    // search can match a totally different, never-ordered product that
+    // happens to share a word -- e.g. "sunscreen" (the word) appears
+    // literally in "Mineral Sunscreen SPF 30", so a catalog-wide search
+    // picked that over a customer's REAL sunscreen order, "SPF 50 Watery
+    // Sun Gel", whose name doesn't contain the word "sunscreen" at all
+    // (and whose only distinguishing word, "Sun", is too short to pass the
+    // length>3 filter). Searching the customer's own orders first means
+    // "my sunscreen order" finds what they actually bought, not whatever
+    // catalog item happens to share a substring.
+    const ownedProducts = db.prepare(`
+        SELECT DISTINCT p.product_id, p.name
+        FROM orders o JOIN products p ON o.product_id = p.product_id
+        WHERE o.user_id = ?
+    `).all(userId);
+
+    const ownedExact = ownedProducts.find((p) => msgLower.includes(p.name.toLowerCase()));
+    if (ownedExact) return ownedExact;
+
+    const ownedLoose = ownedProducts.find((p) => {
+        const nameWords = p.name.toLowerCase().split(/\s+/).filter((w) => w.length > 3);
+        return nameWords.some((word) => msgLower.includes(word));
+    });
+    if (ownedLoose) return ownedLoose;
+
+    // CATEGORY FALLBACK: word-overlap can miss a real owned product whose
+    // NAME doesn't literally contain the category word the customer used
+    // -- e.g. "sunscreen" (customer's word) vs a product actually named
+    // "... Sun Gel" (no shared word once "Sun" is filtered out for being
+    // too short). If the message names a real category and the customer
+    // owns EXACTLY ONE product in it, that's almost certainly what they
+    // mean. Deliberately only acts on a single unambiguous match -- with
+    // 0 or 2+ owned products in that category, fall through rather than
+    // guess which one.
+    const category = detectCategory(message);
+    if (category) {
+        const ownedInCategory = db.prepare(`
+            SELECT DISTINCT p.product_id, p.name
+            FROM orders o JOIN products p ON o.product_id = p.product_id
+            WHERE o.user_id = ? AND p.category = ?
+        `).all(userId, category);
+        if (ownedInCategory.length === 1) return ownedInCategory[0];
+    }
+
+    // Fall through to the full catalog -- covers a customer asking about a
+    // product they haven't ordered yet, where "no order on file for that"
+    // is the correct, honest reply.
+    const allProducts = db.prepare('SELECT product_id, name FROM products').all();
     const exactMatch = allProducts.find((p) => msgLower.includes(p.name.toLowerCase()));
     if (exactMatch) return exactMatch;
 
@@ -93,7 +142,7 @@ function handleOrderTracking(userId, extraParams = {}) {
         // normal handling below rather than dead-ending.
     }
 
-    const mentionedProduct = findProductMentioned(message);
+    const mentionedProduct = findProductMentioned(userId, message);
     if (mentionedProduct) {
         const matchingOrders = db.prepare(`${baseQuery} AND p.product_id = ? ORDER BY o.order_date DESC`).all(userId, mentionedProduct.product_id);
 

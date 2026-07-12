@@ -10,7 +10,54 @@
 </head>
 <body>
 
-  <div class="app-shell">
+  <div class="landing-shell" id="landingShell">
+    <header class="landing-header">
+      <p class="brand-eyebrow">Lumière</p>
+    </header>
+
+    <main class="hero">
+      <div class="hero-mark" aria-hidden="true">
+        <svg viewBox="0 0 220 220" width="220" height="220">
+          <path class="mark-path mark-outline"
+                d="M110 30 C 78 55, 62 95, 82 135 C 94 158, 110 165, 110 195
+                   C 110 165, 126 158, 138 135 C 158 95, 142 55, 110 30 Z"
+                fill="none" stroke="currentColor" stroke-width="1.6" />
+          <line class="mark-path mark-vein"
+                x1="110" y1="82" x2="110" y2="180" stroke="currentColor" stroke-width="1" opacity="0.6"/>
+          <path class="mark-path mark-leaf-left"
+                d="M92 118 C 76 112, 64 118, 58 132 C 72 136, 86 132, 92 118 Z"
+                fill="currentColor" opacity="0.9" />
+          <path class="mark-path mark-leaf-right"
+                d="M128 108 C 144 100, 158 104, 166 116 C 152 122, 136 120, 128 108 Z"
+                fill="currentColor" opacity="0.9" />
+        </svg>
+      </div>
+
+      <h1 class="hero-title">Skincare,<br>actually understood.</h1>
+      <p class="hero-sub">
+        Tell Lumière what your skin is doing. Get a real answer back —
+        a product match, an order update, or a straight fix for what went wrong.
+      </p>
+
+      <button type="button" class="cta-button" id="startChatBtn">
+        <span>Start chatting</span>
+        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+          <path d="M5 12h13M13 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </button>
+
+      <div class="hero-footnote">
+        <span class="dot-status" aria-hidden="true"></span>
+        Answers on recommendations, orders, returns &amp; payments — day or night.
+      </div>
+    </main>
+
+    <footer class="landing-footer">
+      <p>Lumière Skincare</p>
+    </footer>
+  </div>
+
+  <div class="app-shell hidden" id="appShell">
 
     <header class="brand-header">
       <div class="brand-mark" aria-hidden="true">

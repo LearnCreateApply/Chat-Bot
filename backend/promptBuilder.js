@@ -1,4 +1,4 @@
-// Role-specific persona instructions, per spec Section 6.4.
+// Role-specific persona instructions.
 const ROLE_PERSONAS = {
     Sales:
         "You are a friendly Sales assistant for a beauty and skincare brand. Be warm, concise, and helpful.",
@@ -8,20 +8,29 @@ const ROLE_PERSONAS = {
         "You are a Support assistant who helps resolve payment and checkout issues. Be calm, clear, and solution-focused.",
 };
 
+// BREVITY RULE -- applied to every single reply, every intent. Fix for a
+// real observed problem: with a genuinely long list of real, correctly
+// retrieved products, the model defaulted to listing every single one in
+// full detail, every time, even when asked for just "the best one." This
+// instruction caps reply length and explicitly tells the model not to
+// re-list options it already showed unless specifically asked to.
+const BREVITY_RULE = `REPLY LENGTH RULE: Keep your reply SHORT -- 2-4 sentences maximum, unless the user explicitly asks for more detail or a full list. If multiple real options were provided above, do NOT list all of them again unless the user asked to see options -- if they asked for "the best one" or similar, name ONLY that one option and briefly say why, not the whole list. If you already listed products in a previous reply, do not repeat that full list again -- refer to it briefly instead (e.g. "the Bioderma one" rather than re-describing it).`;
+
 /**
  * Builds the final prompt sent to Gemini.
  *
- * HARD CONSTRAINT (spec Section 6.4): this function must only ever receive
- * `context` as a pre-formatted, human-readable string (produced by a DB
- * handler) and the user's original `message`. Never pass raw DB rows, JSON,
- * or the database schema in here -- the model should only ever be asked to
- * rephrase facts that code has already verified, not interpret raw data
- * itself. This is what prevents hallucinated order/payment details.
+ * HARD CONSTRAINT: this function must only ever receive `context` as a
+ * pre-formatted, human-readable string (produced by a DB handler) and the
+ * user's original `message`. Never pass raw DB rows, JSON, or the database
+ * schema in here -- the model should only ever be asked to rephrase facts
+ * that code has already verified, not interpret raw data itself.
  */
 function buildPrompt(role, context, message) {
     const persona = ROLE_PERSONAS[role] || ROLE_PERSONAS.Support;
 
     return `${persona}
+
+${BREVITY_RULE}
 
 Use the following factual information to answer the user, but phrase it naturally -- do not just repeat it verbatim:
 
@@ -34,31 +43,20 @@ Write a short, natural reply.`;
 
 /**
  * Builds a prompt for messages that didn't confidently match any of the 5
- * known intents (low_confidence from the intent service). This is
- * DELIBERATELY different from buildPrompt above:
- *
- * - No role persona, no "factual information" framing -- there IS no
- *   verified context here, by design, so we never ask Gemini to answer the
- *   question with data it doesn't have.
- * - The instruction explicitly tells Gemini to DEFLECT gracefully, not
- *   answer -- e.g. "I can't pull up a full catalog here, but I can help you
- *   compare or look up specific products by name" -- rather than guessing at
- *   real data (which would risk inventing facts) or bluntly saying "I don't
- *   understand" (which feels broken to the user).
- * - This is intentionally GENERIC: it doesn't hardcode what the off-script
- *   request might be about (catalog listing, something entirely unrelated,
- *   etc.) -- it works the same way regardless of what specifically didn't
- *   match, which is the whole point: we can't predict every phrasing that
- *   won't match our 5 intents, so this path doesn't try to.
+ * known intents (low_confidence from the intent service). No role persona,
+ * no "factual information" framing -- there is no verified context here by
+ * design, so we never ask Gemini to answer using data it doesn't have.
  */
 function buildDeflectionPrompt(message) {
     return `You are a warm, helpful concierge for a beauty and skincare brand's chat assistant. The user just asked something that doesn't clearly match what you're able to look up directly (you can help with: product recommendations, comparing two specific products, order tracking, returns, and payment issues).
 
+${BREVITY_RULE}
+
 You do NOT have the information to directly answer this specific request, and you must NOT invent or guess at facts (like product lists, prices, or policies) you don't actually have.
 
-Instead, respond with a short, friendly, natural reply that:
+Respond with a short, friendly, natural reply that:
 - Politely acknowledges you can't pull up exactly what they asked for
-- Suggests a reasonable next step (e.g. checking the website, or rephrasing toward something you CAN help with -- naming specific products to compare, asking about a specific order, etc.)
+- Suggests a reasonable next step (e.g. checking the website, or rephrasing toward something you CAN help with)
 - Stays warm and on-brand, never sounds like an error message
 
 User's message: "${message}"
@@ -67,25 +65,20 @@ Write a short, natural reply.`;
 }
 
 /**
- * Builds a deflection prompt that ALSO tells Gemini what's in conversation
- * memory, so it can ask a smart, specific clarifying question instead of a
- * generic "I'm not sure what you mean."
+ * Memory-aware deflection: used when the classifier scored low confidence
+ * AND conversation memory has real, DB-verified product details to offer.
+ * This is the fix for a real gap -- a user assuming the bot remembers a
+ * product just discussed (e.g. "is this really the best one") with no
+ * product name in the current message. Without this, the deflection path
+ * fired BLIND, ignoring memory entirely, and asked a generic clarifying
+ * question even when the bot genuinely knew what was just discussed.
  *
- * WHY THIS EXISTS: a real, common pattern is the user assuming the bot can
- * "see" the conversation the same way they can (e.g. asking "is it good for
- * sensitive skin" right after a product was mentioned, with no product name
- * IN this message). That message has no resolvable intent-bearing content
- * on its own, so the classifier correctly scores it low-confidence -- but
- * blind deflection (the original buildDeflectionPrompt) then responds as if
- * NOTHING was ever discussed, which feels broken to a user who reasonably
- * assumed context would carry over.
- *
- * This function closes that gap WITHOUT reintroducing the raw-history risk
- * the rest of this architecture avoids: it only ever passes REAL, DB-
- * verified product names already in memory (see conversationState.js) --
- * never raw chat text -- and explicitly tells Gemini to ask a targeted
- * clarifying question using those real names, rather than guessing which
- * one the user means or inventing an answer about it.
+ * `mentionedProductDetails` is a list of FULL product objects (name,
+ * category, price, rating, description) freshly fetched from the database
+ * -- never cached/stale data, never raw chat text. If the model can
+ * confidently tell which one the user means AND the real data supports an
+ * answer, it should answer directly; otherwise it asks a SPECIFIC
+ * clarifying question using the real names, not a generic one.
  */
 function buildMemoryAwareDeflectionPrompt(message, mentionedProductDetails) {
     const productList = mentionedProductDetails
@@ -94,12 +87,14 @@ function buildMemoryAwareDeflectionPrompt(message, mentionedProductDetails) {
 
     return `You are a warm, helpful concierge for a beauty and skincare brand's chat assistant. The user just sent a message that doesn't clearly match a specific lookup on its own (you can help with: product recommendations, comparing two specific products, order tracking, returns, and payment issues).
 
+${BREVITY_RULE}
+
 IMPORTANT CONTEXT: earlier in this conversation, these REAL products were discussed (with their actual current details):
 ${productList}
 
-The user's current message may be referring to one of these without naming it directly (e.g. "is it good for sensitive skin", "how much is it", "compare it to something else") -- this is a common and reasonable assumption users make.
+The user's current message may be referring to one of these without naming it directly (e.g. "is it good for sensitive skin", "is this really the best one", "how much is it") -- this is a common and reasonable assumption users make, since they can see the earlier reply on screen even though you can't "see" it the same way.
 
-If you can confidently tell which ONE product they mean AND their question can be answered using the real details above, go ahead and answer it directly using only those real facts -- do not invent anything beyond what's listed. If it's genuinely unclear which product they mean, ask a specific clarifying question using the real product names above (e.g. "Did you mean the [exact product name]?") rather than a generic "could you clarify?".
+If you can confidently tell which ONE product they mean (or if they're asking about the group as a whole, like "which is the best one") AND their question can be answered using the real details above, answer it directly using only those real facts -- name ONE specific product if asked for "the best," don't re-list everything. Do not invent anything beyond what's listed. If it's genuinely unclear which product they mean, ask a specific clarifying question using the real product names above.
 
 Stay warm and on-brand either way -- never sound like an error message.
 

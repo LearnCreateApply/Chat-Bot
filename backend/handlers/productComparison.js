@@ -2,9 +2,18 @@ const db = require('../db');
 const { getState, setPendingClarification, clearPendingClarification, isBareConfirmation } = require('../conversationState');
 
 function formatTwoProductContext(p1, p2, note) {
+    // DIRECTIVE INSTRUCTION -- fix for an observed hedging failure: with
+    // just the two products' facts and no explicit instruction, the model
+    // sometimes asked the user "did you want a full comparison or just more
+    // detail?" even though both products were already clearly identified
+    // and there's nothing left to clarify. Both product names came from a
+    // real DB match on THIS message (or a resolved memory reference), so
+    // there's no ambiguity left to check for -- tell the model to just
+    // compare them now.
     return `Comparison Context:${note || ''}\n` +
            `Product A: ${p1.name} ($${p1.price.toFixed(2)}, Rating ${p1.rating}/5) - ${p1.description}\n` +
-           `Product B: ${p2.name} ($${p2.price.toFixed(2)}, Rating ${p2.rating}/5) - ${p2.description}`;
+           `Product B: ${p2.name} ($${p2.price.toFixed(2)}, Rating ${p2.rating}/5) - ${p2.description}\n` +
+           `\nBoth products are confirmed -- do NOT ask the user which one they want, whether they want a comparison, or for any other clarification. Directly compare Product A and Product B using only the facts above and state which one is the better fit and why.`;
 }
 
 function handleProductComparison(userId, extraParams = {}) {
@@ -169,6 +178,41 @@ function handleProductComparison(userId, extraParams = {}) {
         }
         // Remembered name didn't resolve to a real product (stale/edge
         // case) -- fall through to the generic fallback below.
+        const defaults = allProducts.slice(0, 2);
+        return `The user asked for a product comparison but didn't clearly mention exactly which items. ` +
+               `Gently prompt them to provide the names of the two products. For Example: ` +
+               `We have ${defaults[0].name} and ${defaults[1].name}.`;
+    } else if ((state.mentionedProducts || []).length >= 2 && matchedProducts.length === 0) {
+        // BELT-AND-SUSPENDERS FIX: the message named no product at all --
+        // not even a loose keyword match (e.g. "is this really the best
+        // one", which shares no words with any product name) -- but memory
+        // already has multiple REAL products from earlier in the
+        // conversation. This case is normally meant to be resolved by the
+        // low-confidence + memory-aware deflection path in server.js
+        // instead of ever reaching this handler -- but intent
+        // classification for vague phrasing like this isn't 100%
+        // deterministic. If it DOES land here anyway, we should still use
+        // the real remembered group rather than falling through to the
+        // generic branch below, which used to suggest two arbitrary,
+        // unrelated catalog products that have nothing to do with what was
+        // actually just discussed.
+        const rememberedDetails = state.mentionedProducts
+            .map((name) => allProducts.find((p) => p.name.toLowerCase() === name.toLowerCase()))
+            .filter(Boolean);
+        if (rememberedDetails.length >= 2) {
+            // Best-guess pending clarification, same pattern used elsewhere
+            // in this file: if Gemini ends up asking "did you mean X and
+            // Y?" instead of resolving directly, a bare "yes" next needs
+            // SOMETHING concrete to fall back to. The two most-recently-
+            // mentioned products is the most reasonable default guess when
+            // nothing in the message itself disambiguates further.
+            const recent = state.mentionedProducts.slice(-2);
+            setPendingClarification(userId, 'product_comparison', recent);
+            const list = rememberedDetails
+                .map((p) => `${p.name} ($${p.price.toFixed(2)}, Rating ${p.rating}/5) - ${p.description}`)
+                .join('\n');
+            return `The user asked a comparison-style question ("${message}") without naming a specific product. These are the REAL products recently discussed in this conversation:\n${list}\nIf their wording can be answered using only these real facts (e.g. "the best one"), answer directly -- name the single best fit and briefly say why, don't just re-list all of them. Do not invent or assume facts about products not in this list. If it's genuinely unclear what they're asking, ask a specific clarifying question using these real product names -- if they just reply "yes" next, we'll proceed with ${recent[0]} vs ${recent[1]}.`;
+        }
         const defaults = allProducts.slice(0, 2);
         return `The user asked for a product comparison but didn't clearly mention exactly which items. ` +
                `Gently prompt them to provide the names of the two products. For Example: ` +

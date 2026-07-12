@@ -22,6 +22,9 @@ const quickRepliesEl = document.getElementById('quickReplies');
 const composerForm = document.getElementById('composerForm');
 const messageInput = document.getElementById('messageInput');
 const userPicker = document.getElementById('userPicker');
+const landingShell = document.getElementById('landingShell');
+const appShell = document.getElementById('appShell');
+const startChatBtn = document.getElementById('startChatBtn');
 
 let quickRepliesShown = false;
 
@@ -139,8 +142,12 @@ composerForm.addEventListener('submit', (e) => {
   sendMessage(messageInput.value);
 });
 
-// On load: bot's opening message + quick-reply buttons shown ONCE.
-function init() {
+// Bot's opening message + quick-reply buttons, shown ONCE per session,
+// the first time the chat becomes visible.
+let chatInitialized = false;
+function initChat() {
+  if (chatInitialized) return;
+  chatInitialized = true;
   addMessage(
     'bot',
     "Hi! I'm Lumière, your skincare concierge. I can help with recommendations, orders, returns, and more. What can I help with today?",
@@ -150,4 +157,10 @@ function init() {
   renderQuickReplies();
 }
 
-init();
+// Landing page CTA swaps the landing view for the chat app and starts it.
+startChatBtn.addEventListener('click', () => {
+  landingShell.classList.add('hidden');
+  appShell.classList.remove('hidden');
+  initChat();
+  messageInput.focus();
+});

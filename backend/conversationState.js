@@ -42,6 +42,7 @@ const DEFAULT_STATE = {
     lastIntent: null,
     mentionedProducts: [], // running, deduplicated list of real product names mentioned this session
     lastOrderId: null,     // order id most recently referenced, if any
+    lastCategory: null,    // real DB category string (e.g. "cleanser") most recently recommended
     pendingClarification: null, // see setPendingClarification below
     updatedAt: null,
 };
@@ -106,6 +107,19 @@ function addMentionedProducts(userId, newProductNames) {
  */
 function setLastOrderId(userId, orderId) {
     return updateState(userId, { lastOrderId: orderId });
+}
+
+/**
+ * Records the real DB category (e.g. "cleanser") that was most recently
+ * recommended to the user. This is the fix for a real gap: a follow-up like
+ * "is there another option in that category" or "show me more like that"
+ * has no category keyword of its own for detectRequestedCategory to match
+ * on -- without remembering what category was just shown, the handler had
+ * nothing to resolve "that category" against and fell through to a generic
+ * deflection asking the user to name the category they'd just been shown.
+ */
+function setLastCategory(userId, category) {
+    return updateState(userId, { lastCategory: category });
 }
 
 function clearState(userId) {
@@ -179,6 +193,7 @@ module.exports = {
     updateState,
     addMentionedProducts,
     setLastOrderId,
+    setLastCategory,
     clearState,
     setPendingClarification,
     clearPendingClarification,

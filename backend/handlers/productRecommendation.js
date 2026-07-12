@@ -1,4 +1,6 @@
 const db = require('../db');
+const { getState, setLastCategory } = require('../conversationState');
+const { detectCategory: detectRequestedCategory } = require('./categoryKeywords');
 
 // Cap only applies when NO specific category can be detected (i.e. a fully
 // generic "recommend something for me" with no product type mentioned).
@@ -8,29 +10,11 @@ const db = require('../db');
 // top-N slice that might exclude the one thing the user actually asked for.
 const GENERIC_FALLBACK_LIMIT = 5;
 
-// Maps the words a user might actually type to the REAL category values
-// stored in products.category. Multiple keywords can map to the same
-// category (e.g. "face wash" and "cleanser" both mean "cleanser") -- this
-// is necessary because customers don't know or use our internal category
-// names, they use everyday language.
-const CATEGORY_KEYWORDS = {
-    cleanser: ['cleanser', 'face wash', 'facewash', 'wash', 'cleansing'],
-    serum: ['serum'],
-    moisturizer: ['moisturizer', 'moisturiser', 'cream', 'lotion'],
-    sunscreen: ['sunscreen', 'sunblock', 'spf', 'sun cream'],
-    toner: ['toner', 'toning'],
-    mask: ['mask', 'masque'],
-    mist: ['mist', 'spray'],
-    treatment: ['treatment', 'spot treatment', 'blemish'],
-    haircare: ['hair', 'haircare', 'shampoo', 'conditioner'],
-    makeup: ['makeup', 'make-up', 'lipstick', 'lip balm', 'mascara'],
-};
-
-/**
- * Detects which REAL product category (if any) the user's message is
- * asking about, based on everyday keywords. Returns the category string
- * exactly as stored in the database, or null if no category is detectable
- * (e.g. a generic "recommend something for me").
+/*
+ * detectRequestedCategory (imported above from categoryKeywords.js) returns
+ * the REAL product category string as stored in products.category, or null
+ * if no category is detectable (e.g. a generic "recommend something for
+ * me").
  *
  * THIS IS THE CORE FIX for a real observed bug: the old version only ever
  * filtered by skin type, then took a top-5-by-rating slice across ALL
@@ -42,16 +26,75 @@ const CATEGORY_KEYWORDS = {
  * across-the-board top-5 cut, it was invisible to the model entirely, even
  * though it existed in the catalog.
  */
-function detectRequestedCategory(message) {
+
+// Fallback for when the user describes a SKIN CONCERN rather than naming a
+// product category outright -- e.g. "my face gets oily by the afternoon"
+// names no category word at all, but a real person (and a real sales
+// associate) would read that as "this customer needs a cleanser with oil
+// control." Checked ONLY as a fallback after CATEGORY_KEYWORDS finds
+// nothing, so an explicit category mention always wins (e.g. "moisturizer
+// for oily skin" still returns moisturizer, not cleanser).
+const SKIN_CONCERN_KEYWORDS = {
+    cleanser: ['oily', 'oil', 'greasy', 'shiny', 'shine', 'excess sebum'],
+    moisturizer: ['dry', 'flaky', 'flaking', 'tight', 'dehydrated'],
+    treatment: ['acne', 'breakout', 'breakouts', 'pimple', 'pimples', 'blemish', 'blemishes', 'zit'],
+    serum: ['dark spot', 'dark spots', 'hyperpigmentation', 'dullness', 'dull skin', 'uneven tone', 'glow'],
+    sunscreen: ['sunburn', 'sun damage', 'sun protection'],
+    haircare: ['frizz', 'frizzy', 'dandruff', 'split ends'],
+};
+
+function detectConcernCategory(message) {
     if (!message) return null;
     const msgLower = message.toLowerCase();
 
-    for (const [category, keywords] of Object.entries(CATEGORY_KEYWORDS)) {
+    for (const [category, keywords] of Object.entries(SKIN_CONCERN_KEYWORDS)) {
         if (keywords.some((kw) => msgLower.includes(kw))) {
             return category;
         }
     }
     return null;
+}
+
+
+// with no category keyword of their own -- e.g. "another option", "show me
+// more", "anything else in that category", "a different one". Deliberately
+// narrow (continuation language only) so a genuinely new, category-less
+// request like "recommend something for me" still falls through to the
+// generic top-picks behavior instead of silently reusing a stale category.
+const CONTINUATION_PATTERN = /\b(another|more|else|other|different one|that category|same category)\b/;
+
+/**
+ * Resolves which real DB category (if any) this turn should use, given the
+ * message AND the user's remembered lastCategory. THE FIX for a real gap:
+ * a follow-up like "is there another option in that category" has no
+ * category keyword for detectRequestedCategory to match on its own -- only
+ * the word "another"/"that category", which by itself isn't tied to any
+ * specific category. Without checking memory, this fell through to the
+ * generic top-picks-across-everything fallback, silently ignoring that the
+ * user was clearly still talking about the category just shown.
+ */
+function resolveCategory(message, userId) {
+    const direct = detectRequestedCategory(message);
+    if (direct) return direct;
+
+    const concern = detectConcernCategory(message);
+    if (concern) return concern;
+
+    if (CONTINUATION_PATTERN.test((message || '').toLowerCase())) {
+        const state = getState(userId);
+        if (state.lastCategory) return state.lastCategory;
+    }
+    return null;
+}
+
+// Separate from resolveCategory above -- this checks for continuation
+// LANGUAGE specifically (independent of how the category itself got
+// resolved), so "do you have ANOTHER cleanser" (direct keyword + "another")
+// is treated as a continuation just as much as "is there another option in
+// that category" (memory-resolved) is. Used to decide whether to exclude
+// products already shown, not just whether to resolve a bare category.
+function isContinuationRequest(message) {
+    return CONTINUATION_PATTERN.test((message || '').toLowerCase());
 }
 
 function handleProductRecommendation(userId, extraParams = {}) {
@@ -63,21 +106,58 @@ function handleProductRecommendation(userId, extraParams = {}) {
     }
     const skinType = user.skin_type;
 
-    const requestedCategory = detectRequestedCategory(message);
+    const requestedCategory = resolveCategory(message, userId);
+    // FIX: only ever SET lastCategory when this turn actually carries a
+    // category signal (direct keyword, concern keyword, or a continuation
+    // resolved via memory) -- never CLEAR it just because this particular
+    // turn happened to be category-agnostic. Previously, ANY
+    // product_recommendation turn overwrote lastCategory with whatever
+    // resolveCategory returned, including null -- so a later, unrelated
+    // recommendation turn (e.g. an objection like "you don't know my skin
+    // type", which has no category signal at all) would silently erase a
+    // perfectly good "customer was just looking at cleansers" memory,
+    // breaking a LATER "another option in that category" that has nothing
+    // to do with the turn that cleared it.
+    if (requestedCategory) {
+        setLastCategory(userId, requestedCategory);
+    }
 
     let products;
+    // FIX for a real gap: "another option in that category" was resolving
+    // the RIGHT category, but re-running the exact same query -- so a
+    // second "anything else?" showed the identical list again instead of
+    // something new. Only exclude when continuation language is actually
+    // present, so a fresh, direct category ask (e.g. first-time "recommend
+    // a cleanser") still gets the full real list, unaffected.
+    const state = getState(userId);
+    const excludeNames = (requestedCategory && isContinuationRequest(message))
+        ? (state.mentionedProducts || [])
+        : [];
+
     if (requestedCategory) {
         // Category detected: fetch ALL matching products for this category
         // + skin type, no limit. This is the actual fix -- "serum" gets
         // every real serum that fits their skin type, not a slice of
         // whatever happened to rank highest across the whole catalog.
-        products = db.prepare(`
-            SELECT name, price, rating, description 
-            FROM products 
-            WHERE category = ?
-              AND (skin_type_fit LIKE ? OR skin_type_fit LIKE '%all%')
-            ORDER BY rating DESC
-        `).all(requestedCategory, `%${skinType}%`);
+        if (excludeNames.length > 0) {
+            const placeholders = excludeNames.map(() => '?').join(',');
+            products = db.prepare(`
+                SELECT name, price, rating, description 
+                FROM products 
+                WHERE category = ?
+                  AND (skin_type_fit LIKE ? OR skin_type_fit LIKE '%all%')
+                  AND name NOT IN (${placeholders})
+                ORDER BY rating DESC
+            `).all(requestedCategory, `%${skinType}%`, ...excludeNames);
+        } else {
+            products = db.prepare(`
+                SELECT name, price, rating, description 
+                FROM products 
+                WHERE category = ?
+                  AND (skin_type_fit LIKE ? OR skin_type_fit LIKE '%all%')
+                ORDER BY rating DESC
+            `).all(requestedCategory, `%${skinType}%`);
+        }
     } else {
         // No specific category detectable -- fall back to the old
         // general "top picks across everything" behavior, still capped,
@@ -93,6 +173,12 @@ function handleProductRecommendation(userId, extraParams = {}) {
     }
 
     if (products.length === 0) {
+        if (requestedCategory && excludeNames.length > 0) {
+            // Ran out, rather than repeating -- tell Gemini the honest
+            // reason so it can say so plainly instead of looping back to
+            // an option already shown or inventing a new one.
+            return `The customer has now been shown ALL real "${requestedCategory}" products available for their skin type across this conversation -- there are no further NEW options left in this category. Let them know honestly that they've now seen everything currently available in ${requestedCategory} for their skin type, rather than repeating an earlier option or inventing a new one. Offer to help with a different category instead if they're interested.`;
+        }
         const categoryNote = requestedCategory ? ` in the "${requestedCategory}" category` : '';
         return `Found no products${categoryNote} that match ${skinType} skin. Let the customer know honestly that there's currently nothing in that category for their skin type, rather than suggesting something that doesn't fit.`;
     }
@@ -122,15 +208,29 @@ function getRecommendedProductNames(userId, extraParams = {}) {
     const user = db.prepare('SELECT skin_type FROM users WHERE user_id = ?').get(userId);
     if (!user) return [];
 
-    const requestedCategory = detectRequestedCategory(message);
+    const requestedCategory = resolveCategory(message, userId);
+    const state = getState(userId);
+    const excludeNames = (requestedCategory && isContinuationRequest(message))
+        ? (state.mentionedProducts || [])
+        : [];
 
     let products;
     if (requestedCategory) {
-        products = db.prepare(`
-            SELECT name FROM products 
-            WHERE category = ? AND (skin_type_fit LIKE ? OR skin_type_fit LIKE '%all%')
-            ORDER BY rating DESC
-        `).all(requestedCategory, `%${user.skin_type}%`);
+        if (excludeNames.length > 0) {
+            const placeholders = excludeNames.map(() => '?').join(',');
+            products = db.prepare(`
+                SELECT name FROM products 
+                WHERE category = ? AND (skin_type_fit LIKE ? OR skin_type_fit LIKE '%all%')
+                  AND name NOT IN (${placeholders})
+                ORDER BY rating DESC
+            `).all(requestedCategory, `%${user.skin_type}%`, ...excludeNames);
+        } else {
+            products = db.prepare(`
+                SELECT name FROM products 
+                WHERE category = ? AND (skin_type_fit LIKE ? OR skin_type_fit LIKE '%all%')
+                ORDER BY rating DESC
+            `).all(requestedCategory, `%${user.skin_type}%`);
+        }
     } else {
         products = db.prepare(`
             SELECT name FROM products 
@@ -143,4 +243,4 @@ function getRecommendedProductNames(userId, extraParams = {}) {
 }
 
 module.exports = handleProductRecommendation;
-module.exports.getRecommendedProductNames = getRecommendedProductNames;
+module.exports.getRecommendedProductNames = getRecommendedProductNames; 
